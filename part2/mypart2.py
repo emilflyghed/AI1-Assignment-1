@@ -36,7 +36,7 @@ config = {
 
 # Creates one folder for each run
 timestamp=datetime.now().strftime("%Y%m%d_%H%M%S")
-run_dir = Path("runs") / f"{timestamo}_{config['run_name']}"
+run_dir = Path("runs") / f"{timestamp}_{config['run_name']}"
 checkpoint_dir = run_dir / "checkpoints"
 run_dir.mkdir(parents=True, exist_ok=True)
 checkpoint_dir.mkdir(parents=True, exist_ok=True)
