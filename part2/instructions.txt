@@ -1,0 +1,41 @@
+Eftersom jag vill undvika att vara för mycket “curling-lärare”, så är även delmoment 2 utformat så att ni ska behöva leta rätt på information själva kring vilka metoder som finns för att förbättra perceptronens prestation, learning, och motståndskraft mot overfitting. Både googling och att fråga Chat är utmärkta metoder.
+
+Syfte med del 2
+Del 1 handlade om att nå “Hello World”-nivån för machine learning. Del 2 är lite mer avancerad och syftar till att ge er erfarenhet av:
+
+hur man kan jobba med PyTorch för att få fram bästa möjliga modell, lösa problem, undvika overfitting, använda insamlad data effektivt, hyper-parameter tuning, etc
+att mixa olika typer av layers i era modeller, exempelvis Convolutional layers
+att förstå poängen med MLOps
+Kravspecifikation för del 2
+✅ Börja använda basala MLOps best-practices:
+📊 Ordna så att du har ett bra sätt att övervaka träningen, samt att spara (och hålla ordning på!) versioner av modellerna du tränar upp. (Tips: Foldrar, smart valda filnamn, etc).
+💾 Kom ihåg att det troligen inte är den sista epokens checkpoint (sparad version) som är den bästa, p.g.a. overfitting om du kör många epochs. Du behöver själv se till att spara checkpoints lite då och då under träningen.
+🗄️ Versionshantering av parametrar, kod, och checkpoints (modellens parametrar) blir snabbt väldigt viktigt när man börjar jobba seriöst med machine learning. Om man inte håller reda på vilken körning som gjorts med vilka parametrar, så blir det svårt att jämföra prestanda, vidareutveckla modellen senare, etc. Ingen vill ha en modell levererad där programmeraren inte minns hur den gjordes.
+🚀 Fördjupning/överkurs: Vilka verktyg finns som kan hjälpa till att hålla ordning på versioner, körningar, resultat, hyper parameters, etc?
+🚀 Fördjupning/överkurs: Addera performance metrics, så att du kan se hur lång tid respektive tränings-körning tar. (En körning = Alla epochs av träning för en given modell med specificerad uppsättning hyper parameters).
+✅ Applicera lämpliga data augmentation methods för att artificiellt variera, och till och med “förstora” datamängden lite. Använd exempelvis skalning, rotation, färgvariation, brus, (spegelvändning?), etc. Här är lite repetition om data augmentation:
+Se avsnittet “Shared - Uppgift 1 Perceptron för OCR
+
+
+
+” längre ner i denna uppgift (del 3).
+Bra 10-minuters video om ämnet: Pytorch-Data-Augmentation-using-Torchvision
+Observera att det inte är säkert att data augmentation leder till bättre resultat i alla lägen, eftersom det beror på detaljerna i vad man bygger, och vilken data man har.
+✅ Det är nu dags att testa CNN istället för FFN. Byt ut de första lagren i modellen till convolutional layers för att ta upp translationsinvarians i bilden. Sök själv upp vad man brukar ha direkt efter varje convolutional layer för att hålla ordning på antalet dimensioner till nästa lager .
+(Svårt ord “translations-invarians”: translation=förflyttning, invarians=”samma oavsett” ⇒ translationsinvarians = ”spelar ingen roll var i bilden”)
+✅ Experimentera därefter med att addera ett till (eller flera) convolutional layer(s). Tanken är att testa olika nät-arkitekturer. Använd Google/Chat för initial gissning för modell-arkitektur, men sedan är det trial-and-error som gäller. Att fundera på:
+⚖️ Hur påverkas resultatet av olika modell-arkitektur? Var noga med att inte jämföra modeller med stor skillnad i antal parameters, om aspekter som tex lagertyp ska utvärderas.
+🤔 Vilken typ av features detekteras typiskt av de senare convolutional-lagren jämfört med det första convolutional-lagret?
+Hint: Videon från lektion om convolutional layers: Convolutional-Neural-Networks-Explained. (Självfallet kan du också plotta weight-matrices från din egen modell också om du vill!)
+✅ Applicera lämpliga regularization methods för att minimera risken för overfitting och göra cost-function-landskapet fördelaktigt för back-prop.
+Exempel på sådana metoder är: drop-out, weight-decay, noise injection, batch normalization, etc.
+Mer info om regularization: understanding-regularization-with-pytorch
+🚀 Fördjupning: Skapa en lista av kombinationer av hyper parameters, och låt datorn träna din modell på nytt för samtliga hyperparameter settings i din lista. Detta kallas för hyper-parameter tuning, d.v.s. att via trial-and-error hitta inställningar som funkar.
+Enklast möjliga hyper-param-tuning: Gör en lista med t.ex. 10 rader (en per körning), där varje rad specificerar alla hyper-parameters som kan vara svårt att gissa optimalt värde på:
+Antal neuroner för respektive lager
+Typ av activation function
+Vilka lager som ska vara convolutional, storlek på convolutional kernel, antal convolutional kernels per lager, etc.
+Learning rate / hyper-params till optimizer ADAM
+Drop-out level
+Settings för olika typer av data augmentation (rotation, skalning, noise, etc)
+Det finns även en mängd automatiserade typer av hyper-param-tuning. Se exempelvis: https://en.wikipedia.org/wiki/Hyperparameter_optimization
