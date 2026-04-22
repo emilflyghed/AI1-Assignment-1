@@ -187,3 +187,12 @@ print(f"Best test accuracy: {best_test_acc:.4f}")
 
 with open(run_dir /"history.json", "w") as f:
     json.dump(history, f, indent=2)	
+
+# Load the best model, not the last epoch's checkpoint
+best_checkpoint_path = checkpoint_dir / "best.pt"
+model.load_state_dict(torch.load(best_checkpoint_path, map_location=DEVICE))
+
+# Evaluate the test one more time to get the final test loss and accuracy
+final_test_loss, final_test_acc = run_epoch(test_loader, train_mode=False)
+
+print(f"\n=== Final results === ")
