@@ -105,3 +105,85 @@ class CNN(nn.Module):
 
 model = CNN(dropout=config["dropout"]).to(DEVICE)
 print(model)
+
+
+# Loss function and optimizer
+criterion = nn.CrossEntropyLoss()
+optimizer = torch.optim.Adam(
+    model.parameters(),
+    lr=config["learning_rate"],
+    weight_decay=config["weight_decay"],
+)
+
+# Track metrics across epochs
+history = {"train_loss": [], "train_acc": [], "test_loss": [], "test_acc": []}
+best_acc = 0.0
+
+def run_epoch(loader, train_mode):
+    if train_mode:
+        model.train()
+    else:
+        model.eval()
+    
+    total_loss = 0.0
+    correct = 0
+    total = 0
+
+    context = torch.enable_grad() if train_mode else torch.no_grad()
+    with context:
+        for images, labels in loader:
+            images, labels = images.to(DEVICE), labels.to(DEVICE)
+
+            outputs = model(images)
+            loss = criterion(outputs, labels)
+
+            if train_mode:
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
+            
+            total_loss += loss.item() * images.size(0)
+            predictions = outputs.argmax(dim=1)
+            correct += (predictions == labels).sum().item()
+            total += labels.size(0)
+    
+    avg_loss = total_loss / total
+    accuracy = correct / total
+    return avg_loss, accuracy
+
+training_start = time.time()
+
+for epoch in range(1, config["epochs"] + 1):
+    epoch_start = time.time()
+
+    train_loss, train_acc = run_epoch(train_loader, train_mode=True)
+    test_loss, test_acc = run_epoch(test_loader, train_mode=False)
+
+    history["train_loss"].append(train_loss)
+    history["train_acc"].append(train_acc)
+    history["test_loss"].append(test_loss)
+    history["test_acc"].append(test_acc)
+
+    epoch_time = time.time() - epoch_start
+    print(
+        f"Epoch {epoch:02d}/{config['epochs']} | "
+        f"train_loss={train_loss:.4f}  test_loss={test_loss:.4f}  "
+        f"test_loss={test_loss:.4f}  test_acc={test_acc:.4f}  "
+        f"time={epoch_time:.1f}s"
+    )
+
+    # Save the "best so far" model. The best model is rarely the last one#save tue final parta
+    if test_acc > best_acc:
+        best_test_acc = test_acc
+        torch.save(model.state_dict(), checkpoint_dir / "best.pt")
+
+    # Save periodic checkpoints every 5 epochs so we can inspect training history.
+    if epoch % 5 == 0:
+        torch.save(model.state_dict(), checkpoint_dir / f"epoch_{epoch:02d}.pt")
+
+total_time = time.time() - training_start
+print(f"\nTotal training time: {total_time:.1f}s")
+print(f"Best test accuracy: {best_test_acc:.4f}")
+
+with open(run_dir /"history.json", "w") as f:
+    json.dump(history, f, indent=2)	
