@@ -69,7 +69,7 @@ test_dataset = datasets.MNIST(root="data", train=False, download=True, transform
 train_loader = DataLoader(train_dataset, batch_size=config["batch_size"], shuffle=True, num_workers=2)
 test_loader = DataLoader(test_dataset, batch_size=config["batch_size"], shuffle=False, num_workers=2)
 
-print(f"Traing samples: {len(train_dataset)}")
+print(f"Training samples: {len(train_dataset)}")
 print(f"Test samples: {len(test_dataset)}")
 
 class CNN(nn.Module):
@@ -83,7 +83,7 @@ class CNN(nn.Module):
         self.conv2 = nn.Conv2d(in_channels=32, out_channels=64, kernel_size=3, padding=1)
         self.bn2 = nn.BatchNorm2d(64)
 
-        # Pooling halves spatioal dimensions each time it's applied
+        # Pooling halves spatial dimensions each time it's applied
         self.pool = nn.MaxPool2d(kernel_size=2, stride=2)
 
         # Fully connected layer
@@ -117,7 +117,7 @@ optimizer = torch.optim.Adam(
 
 # Track metrics across epochs
 history = {"train_loss": [], "train_acc": [], "test_loss": [], "test_acc": []}
-best_acc = 0.0
+best_test_acc = 0.0
 
 def run_epoch(loader, train_mode):
     if train_mode:
@@ -151,48 +151,71 @@ def run_epoch(loader, train_mode):
     accuracy = correct / total
     return avg_loss, accuracy
 
-training_start = time.time()
+if __name__ == "__main__":
 
-for epoch in range(1, config["epochs"] + 1):
-    epoch_start = time.time()
+    training_start = time.time()
 
-    train_loss, train_acc = run_epoch(train_loader, train_mode=True)
-    test_loss, test_acc = run_epoch(test_loader, train_mode=False)
+    for epoch in range(1, config["epochs"] + 1):
+        epoch_start = time.time()
 
-    history["train_loss"].append(train_loss)
-    history["train_acc"].append(train_acc)
-    history["test_loss"].append(test_loss)
-    history["test_acc"].append(test_acc)
+        train_loss, train_acc = run_epoch(train_loader, train_mode=True)
+        test_loss, test_acc = run_epoch(test_loader, train_mode=False)
 
-    epoch_time = time.time() - epoch_start
-    print(
-        f"Epoch {epoch:02d}/{config['epochs']} | "
-        f"train_loss={train_loss:.4f}  test_loss={test_loss:.4f}  "
-        f"test_loss={test_loss:.4f}  test_acc={test_acc:.4f}  "
-        f"time={epoch_time:.1f}s"
-    )
+        history["train_loss"].append(train_loss)
+        history["train_acc"].append(train_acc)
+        history["test_loss"].append(test_loss)
+        history["test_acc"].append(test_acc)
 
-    # Save the "best so far" model. The best model is rarely the last one#save tue final parta
-    if test_acc > best_acc:
-        best_test_acc = test_acc
-        torch.save(model.state_dict(), checkpoint_dir / "best.pt")
+        epoch_time = time.time() - epoch_start
+        print(
+            f"Epoch {epoch:02d}/{config['epochs']} | "
+            f"train_loss={train_loss:.4f} train_acc={train_acc:.4f} | "
+            f"test_loss={test_loss:.4f} test_acc={test_acc:.4f} | "
+            f"time={epoch_time:.1f}s"
+        )
 
-    # Save periodic checkpoints every 5 epochs so we can inspect training history.
-    if epoch % 5 == 0:
-        torch.save(model.state_dict(), checkpoint_dir / f"epoch_{epoch:02d}.pt")
+        # Save the "best so far" model. The best model is rarely the last one
+        if test_acc > best_test_acc:
+            best_test_acc = test_acc
+            torch.save(model.state_dict(), checkpoint_dir / "best.pt")
 
-total_time = time.time() - training_start
-print(f"\nTotal training time: {total_time:.1f}s")
-print(f"Best test accuracy: {best_test_acc:.4f}")
+        # Save periodic checkpoints every 5 epochs so we can inspect training history.
+        if epoch % 5 == 0:
+            torch.save(model.state_dict(), checkpoint_dir / f"epoch_{epoch:02d}.pt")
 
-with open(run_dir /"history.json", "w") as f:
-    json.dump(history, f, indent=2)	
+    total_time = time.time() - training_start
+    print(f"\nTotal training time: {total_time:.1f}s")
+    print(f"Best test accuracy: {best_test_acc:.4f}")
 
-# Load the best model, not the last epoch's checkpoint
-best_checkpoint_path = checkpoint_dir / "best.pt"
-model.load_state_dict(torch.load(best_checkpoint_path, map_location=DEVICE))
+    with open(run_dir /"history.json", "w") as f:
+        json.dump(history, f, indent=2)	
 
-# Evaluate the test one more time to get the final test loss and accuracy
-final_test_loss, final_test_acc = run_epoch(test_loader, train_mode=False)
+    # Load the best model, not the last epoch's checkpoint
+    best_checkpoint_path = checkpoint_dir / "best.pt"
+    model.load_state_dict(torch.load(best_checkpoint_path, map_location=DEVICE))
 
-print(f"\n=== Final results === ")
+    # Evaluate the test one more time to get the final test loss and accuracy
+    final_test_loss, final_test_acc = run_epoch(test_loader, train_mode=False)
+
+    print(f"\n=== Final results === ")
+    print(f"Best checkpoint: {best_checkpoint_path}")
+    print(f"Final test loss: {final_test_loss:.4f}")
+    print(f"Final test accuracy: {final_test_acc:.4f}")
+
+    # Save a summary of this run
+    summary = {
+        "run_name": config["run_name"],
+        "run_dir": str(run_dir),
+        "config": config,
+        "final_test_loss": final_test_loss,
+        "final_test_accuracy": final_test_acc,
+        "best_test_accuracy": best_test_acc,
+        "total_training_time_sec": total_time,
+        "epochs_completed": config["epochs"],
+    }
+
+    with open(run_dir / "summary.json", "w") as f:
+        json.dump(summary, f, indent=2)
+
+    print(f"Summary saved to {run_dir / 'summary.json'}")
+
