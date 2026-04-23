@@ -1,0 +1,19 @@
+1. Tidstämplade körningar i seperata mappar och versioner av modellens parametrar, kod, checkpoints och summeringar av resultat sparas i dessa mappar. 
+Bästa körningen sparas när test_acc förbättras under träningen.
+
+2. Varje körning av epoch har blivit loggade i tid samt även total tid för körningen.
+
+3. Data augmentation appliceras på träningsdata, men inte på testdata.
+Använder RandomRotation som roterar bilderna 10 grader i slumpmässig riktning samt RandomAffine som skalar bilderna med en faktor mellan 0.9 och 1.1.
+Testdatan använder bara normaliseringen av data. Noise injection används inte men är värt att nämna som metod.
+
+4. CNN är tillämpat och kör BatchNormalization och pooling som är standardför att minimera overfitting.
+
+5. Två olika CNN-arkitekturer har testats och jämförts. CNN2Conv har 2 convolutional layers och CNN3Conv har 3 convolutional layers.
+
+6. Dropout, weight decay och BatchNormalization har testats och jämförts. Dropout har testats med 0.25 och 0.40 och weight decay har testats med 0.0 och 1e-4. 
+BatchNormalization har testats med 0.0 och 1e-4.
+
+7. Hyperparameter tuning har testats och jämförts. 
+Tre konfigurationer har testats med olika hyperparameter settings: learning rate, dropout och weight decay.
+Resultatet har sparats i en JSON-fil.

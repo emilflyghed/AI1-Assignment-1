@@ -1,320 +1,324 @@
-"""
-Part 2 - CNN for MNIST with data augmentation, regularization and basic MLOps.
-
-What this script does, in plain English:
-  1. Loads the MNIST handwritten-digit dataset (same data as Part 1).
-  2. Applies data augmentation (random rotations, translations, noise) so the
-     model sees slightly different versions of each image during training.
-  3. Defines a small Convolutional Neural Network (CNN) with batch
-     normalization and dropout (two regularization tricks to fight overfitting).
-  4. Trains the model, measures accuracy on the test set every epoch and saves
-     a checkpoint (a "save file" of the model's weights) whenever the test
-     accuracy is the best seen so far. It also saves periodic checkpoints.
-  5. Logs metrics to a CSV so each run can be compared later, and writes a
-     config.json so you remember exactly which hyperparameters were used.
-  6. Runs multiple "experiments" back to back (a tiny hyperparameter search).
-
-Run: python part2.py
-"""
-
-import csv
 import json
-import os
+import random
 import time
-from dataclasses import dataclass, asdict
+import shutil
 from datetime import datetime
-
-import torch
-import torch.nn as nn
-import torch.optim as optim
+from pathlib import Path
 from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
 
+import numpy as np
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
 
-# ----------------------------------------------------------------------------
-# 0. Paths & device
-# ----------------------------------------------------------------------------
-# Reuse the MNIST data already downloaded by Part 1, so we don't download again.
-THIS_DIR = os.path.dirname(os.path.abspath(__file__))
-DATA_DIR = os.path.normpath(os.path.join(THIS_DIR, "..", "part1", "data"))
-RUNS_DIR = os.path.join(THIS_DIR, "runs")
-os.makedirs(RUNS_DIR, exist_ok=True)
+# Same seed > same random numbers every run
+SEED = 42
+random.seed(SEED)
+np.random.seed(SEED)
+torch.manual_seed(SEED)
+if torch.cuda.is_available():
+    torch.cuda.manual_seed_all(SEED)
 
-# Use the GPU if one is available, otherwise fall back to the CPU.
-device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-print(f"Using device: {device}")
+# Use GPU if available, otherwise use CPU
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+# Hyperparameters
+config = {
+    "run_name": "cnn_assignment_part2",
+    "dataset": "MNIST",
+    "batch_size": 64,
+    "epochs": 10,
+    "learning_rate": 1e-3,
+    "optimizer": "adam",
+    "dropout": 0.25,
+    "weight_decay": 0.0,
+    "seed": SEED,
+}
 
-# ----------------------------------------------------------------------------
-# 1. Hyperparameter container
-# ----------------------------------------------------------------------------
-# A dataclass is just a tidy way of grouping related settings in one object.
-# Keeping all tunable numbers in one place is a small but important MLOps habit:
-# we can dump it to config.json so every run is reproducible.
-@dataclass
-class Config:
-    name: str                 # human-readable tag for the run
-    epochs: int = 8
-    batch_size: int = 128
-    lr: float = 1e-3          # learning rate for Adam
-    weight_decay: float = 1e-4  # L2 regularization (fights overfitting)
-    dropout: float = 0.25
-    conv_channels: tuple = (32, 64)  # channels for each conv layer
-    fc_hidden: int = 128      # size of the fully-connected hidden layer
-    rotation_deg: float = 10.0
-    translate: float = 0.1    # up to 10% horizontal/vertical shift
-    noise_std: float = 0.05   # Gaussian noise added to training images
-    save_every: int = 2       # save a periodic checkpoint every N epochs
+# Creates one folder for each run
+timestamp=datetime.now().strftime("%Y%m%d_%H%M%S")
+run_dir = Path("runs") / f"{timestamp}_{config['run_name']}"
+checkpoint_dir = run_dir / "checkpoints"
+run_dir.mkdir(parents=True, exist_ok=True)
+checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
+# Save a snapshot of the exact training script used for this run
+try:
+    shutil.copy2(Path(__file__).resolve(), run_dir / "source_snapshot.py")
+except Exception:
+    pass
 
-# ----------------------------------------------------------------------------
-# 2. Data augmentation + loaders
-# ----------------------------------------------------------------------------
-def build_loaders(cfg: Config):
-    """Build training and test DataLoaders.
+# Save config next to the checkpoints
+with open(run_dir / "config.json", "w") as f:
+    json.dump(config, f, indent=2)
 
-    Training pipeline uses augmentation (random rotation, shift, noise) so the
-    model learns to recognise digits that are slightly moved or rotated. We do
-    *not* augment the test set - that has to stay the true, fixed benchmark.
-    """
+print(f"Device: {DEVICE}")
+print(f"Run folder: {run_dir}")
 
-    class AddGaussianNoise:
-        """Tiny custom transform: add random Gaussian noise to a tensor."""
-        def __init__(self, std): self.std = std
-        def __call__(self, tensor):
-            if self.std <= 0:
-                return tensor
-            return tensor + torch.randn_like(tensor) * self.std
+# Transforms the training set to add random rotation, translation, and scaling
+train_transform = transforms.Compose([
+    transforms.RandomRotation(degrees=10),
+    transforms.RandomAffine(degrees=0, translate=(0.1, 0.1), scale=(0.9, 1.1)),
+    transforms.ToTensor(),
+    transforms.Normalize(mean=(0.1307,), std=(0.3081,)),
+])
 
-    # MNIST digits are symmetric-ish but NOT mirror-invariant (a "3" flipped
-    # horizontally is not a valid digit), so we avoid horizontal flips.
-    train_transform = transforms.Compose([
-        transforms.RandomAffine(
-            degrees=cfg.rotation_deg,
-            translate=(cfg.translate, cfg.translate),
-            scale=(0.9, 1.1),
-        ),
-        transforms.ToTensor(),
-        transforms.Normalize((0.1307,), (0.3081,)),  # MNIST mean/std
-        AddGaussianNoise(cfg.noise_std),
-    ])
-    test_transform = transforms.Compose([
-        transforms.ToTensor(),
-        transforms.Normalize((0.1307,), (0.3081,)),
-    ])
+#Transforms the test set to normalize the data
+test_transform = transforms.Compose([
+    transforms.ToTensor(),
+    transforms.Normalize(mean=(0.1307,), std=(0.3081,)),
+])
 
-    train_set = datasets.MNIST(
-        root=DATA_DIR, train=True, download=True, transform=train_transform,
-    )
-    test_set = datasets.MNIST(
-        root=DATA_DIR, train=False, download=True, transform=test_transform,
-    )
+train_dataset = datasets.MNIST(root="data", train=True, download=True, transform=train_transform)
+test_dataset = datasets.MNIST(root="data", train=False, download=True, transform=test_transform)
 
-    train_loader = DataLoader(
-        train_set, batch_size=cfg.batch_size, shuffle=True, num_workers=0,
-    )
-    test_loader = DataLoader(
-        test_set, batch_size=cfg.batch_size, shuffle=False, num_workers=0,
-    )
-    return train_loader, test_loader
+train_loader = DataLoader(train_dataset, batch_size=config["batch_size"], shuffle=True, num_workers=2)
+test_loader = DataLoader(test_dataset, batch_size=config["batch_size"], shuffle=False, num_workers=2)
 
+print(f"Training samples: {len(train_dataset)}")
+print(f"Test samples: {len(test_dataset)}")
 
-# ----------------------------------------------------------------------------
-# 3. The CNN model
-# ----------------------------------------------------------------------------
-class DigitCNN(nn.Module):
-    """A small Convolutional Neural Network for 28x28 grayscale images.
-
-    Architecture (why each piece is there):
-        Conv2d   -> learns small local features (edges, strokes, curves).
-        BatchNorm2d -> keeps activations in a sane range, stabilises training.
-        ReLU     -> non-linearity; without it multiple layers collapse into one.
-        MaxPool2d -> halves the spatial size, gives translation tolerance.
-        (repeat with more channels so later layers can combine simple features
-        into more complex ones like "loop" or "intersection")
-        Flatten  -> turn the 2D feature maps into a 1D vector.
-        Linear + Dropout -> the classifier; dropout randomly zeros activations
-                            during training to prevent overfitting.
-        Linear   -> final layer with 10 outputs (one score per digit 0..9).
-    """
-
-    def __init__(self, conv_channels=(32, 64), fc_hidden=128, dropout=0.25):
+class CNN2Conv(nn.Module):
+    def __init__(self, dropout=0.25):
         super().__init__()
-        c1, c2 = conv_channels
+        # Convolutional block 1
+        self.conv1 = nn.Conv2d(in_channels=1, out_channels=32, kernel_size=3, padding=1)
+        self.bn1 = nn.BatchNorm2d(32)
 
-        self.features = nn.Sequential(
-            nn.Conv2d(1, c1, kernel_size=3, padding=1),  # 1x28x28 -> c1 x28x28
-            nn.BatchNorm2d(c1),
-            nn.ReLU(inplace=True),
-            nn.MaxPool2d(2),                              # -> c1 x14x14
+        # Convolutional block 2
+        self.conv2 = nn.Conv2d(in_channels=32, out_channels=64, kernel_size=3, padding=1)
+        self.bn2 = nn.BatchNorm2d(64)
 
-            nn.Conv2d(c1, c2, kernel_size=3, padding=1),  # -> c2 x14x14
-            nn.BatchNorm2d(c2),
-            nn.ReLU(inplace=True),
-            nn.MaxPool2d(2),                              # -> c2 x 7x 7
-        )
+        # Pooling halves spatial dimensions each time it's applied
+        self.pool = nn.MaxPool2d(kernel_size=2, stride=2)
 
-        self.classifier = nn.Sequential(
-            nn.Flatten(),
-            nn.Linear(c2 * 7 * 7, fc_hidden),
-            nn.ReLU(inplace=True),
-            nn.Dropout(dropout),
-            nn.Linear(fc_hidden, 10),
-        )
+        # Fully connected layer
+        # After two pools on 28x28 -> 7x7, with 64 channels -> 64*7*7 = 3136 features
+        self.fc1 = nn.Linear(64 * 7 * 7, 128)
+        self.fc2 = nn.Linear(128, 10)
 
+        self.dropout = nn.Dropout(dropout)
+    
     def forward(self, x):
-        x = self.features(x)
-        x = self.classifier(x)
+        # Input shape: (batch, 1, 28, 28)
+        x = self.pool(F.relu(self.bn1(self.conv1(x)))) # -> (batch, 32, 14, 14)
+        x = self.pool(F.relu(self.bn2(self.conv2(x)))) # -> (batch, 64, 7, 7)
+        x = torch.flatten(x, start_dim=1) # -> (batch, 3136)
+        x = F.relu(self.fc1(x))
+        x = self.dropout(x)
+        x = self.fc2(x) # -> (batch, 10) raw logits
         return x
 
+class CNN3Conv(nn.Module):
+    def __init__(self, dropout=0.25):
+        super().__init__()
+        self.conv1 = nn.Conv2d(in_channels=1, out_channels=32, kernel_size=3, padding=1)
+        self.bn1 = nn.BatchNorm2d(32)
+        self.conv2 = nn.Conv2d(in_channels=32, out_channels=64, kernel_size=3, padding=1)
+        self.bn2 = nn.BatchNorm2d(64)
+        self.conv3 = nn.Conv2d(in_channels=64, out_channels=64, kernel_size=3, padding=1)
+        self.bn3 = nn.BatchNorm2d(64)
+        self.pool = nn.MaxPool2d(kernel_size=2, stride=2)
+        self.fc1 = nn.Linear(64 * 3 * 3, 128)
+        self.fc2 = nn.Linear(128, 10)
+        self.dropout = nn.Dropout(dropout)
 
-# ----------------------------------------------------------------------------
-# 4. Training / evaluation helpers
-# ----------------------------------------------------------------------------
-def evaluate(model, loader):
-    """Return (avg_loss, accuracy) on the given loader."""
-    model.eval()
-    criterion = nn.CrossEntropyLoss(reduction="sum")
-    total_loss, correct, total = 0.0, 0, 0
-    with torch.no_grad():
-        for images, labels in loader:
-            images, labels = images.to(device), labels.to(device)
-            outputs = model(images)
-            total_loss += criterion(outputs, labels).item()
-            _, predicted = torch.max(outputs, 1)
-            total += labels.size(0)
-            correct += (predicted == labels).sum().item()
-    return total_loss / total, correct / total
+    def forward(self, x):
+        x = self.pool(F.relu(self.bn1(self.conv1(x))))   # 28x28 -> 14x14
+        x = self.pool(F.relu(self.bn2(self.conv2(x))))   # 14x14 -> 7x7
+        x = self.pool(F.relu(self.bn3(self.conv3(x))))   # 7x7 -> 3x3
+        x = torch.flatten(x, start_dim=1)
+        x = F.relu(self.fc1(x))
+        x = self.dropout(x)
+        x = self.fc2(x)
+        return x
 
-
-def train_one_run(cfg: Config):
-    """Train a single model end-to-end using `cfg` and save results on disk."""
-
-    # Each run gets its own folder so nothing overwrites anything else.
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    run_name = f"{timestamp}_{cfg.name}"
-    run_dir = os.path.join(RUNS_DIR, run_name)
-    os.makedirs(run_dir, exist_ok=True)
-
-    # Save the exact config - crucial for reproducibility.
-    with open(os.path.join(run_dir, "config.json"), "w") as f:
-        json.dump(asdict(cfg), f, indent=2)
-
-    # CSV header for per-epoch metrics.
-    metrics_path = os.path.join(run_dir, "metrics.csv")
-    with open(metrics_path, "w", newline="") as f:
-        csv.writer(f).writerow(
-            ["epoch", "train_loss", "test_loss", "test_acc", "epoch_seconds"],
-        )
-
-    train_loader, test_loader = build_loaders(cfg)
-
-    model = DigitCNN(
-        conv_channels=cfg.conv_channels,
-        fc_hidden=cfg.fc_hidden,
-        dropout=cfg.dropout,
-    ).to(device)
-
-    criterion = nn.CrossEntropyLoss()
-    # weight_decay in Adam IS L2 regularization - another overfitting fighter.
-    optimizer = optim.Adam(
-        model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay,
-    )
-
-    best_acc = 0.0
-    run_start = time.time()
-
-    print(f"\n=== Starting run: {run_name} ===")
-    print(json.dumps(asdict(cfg), indent=2))
-
-    for epoch in range(1, cfg.epochs + 1):
-        epoch_start = time.time()
+def run_epoch(model, loader, criterion, optimizer=None):
+    train_mode = optimizer is not None
+    
+    if train_mode:
         model.train()
-        running_loss, seen = 0.0, 0
+    else:
+        model.eval()
+    
+    total_loss = 0.0
+    correct = 0
+    total = 0
 
-        for images, labels in train_loader:
-            images, labels = images.to(device), labels.to(device)
-            optimizer.zero_grad()
+    context = torch.enable_grad() if train_mode else torch.no_grad()
+    with context:
+        for images, labels in loader:
+            images, labels = images.to(DEVICE), labels.to(DEVICE)
+
             outputs = model(images)
             loss = criterion(outputs, labels)
-            loss.backward()
-            optimizer.step()
-            running_loss += loss.item() * images.size(0)
-            seen += images.size(0)
 
-        train_loss = running_loss / seen
-        test_loss, test_acc = evaluate(model, test_loader)
-        epoch_secs = time.time() - epoch_start
+            if train_mode:
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
+            
+            total_loss += loss.item() * images.size(0)
+            predictions = outputs.argmax(dim=1)
+            correct += (predictions == labels).sum().item()
+            total += labels.size(0)
+    
+    avg_loss = total_loss / total
+    accuracy = correct / total
+    return avg_loss, accuracy
 
-        print(
-            f"Epoch {epoch:02d}/{cfg.epochs} | "
-            f"train_loss={train_loss:.4f}  test_loss={test_loss:.4f}  "
-            f"test_acc={test_acc:.4f}  ({epoch_secs:.1f}s)"
-        )
+architectures = [
+    ("cnn_2conv", CNN2Conv),
+    ("cnn_3conv", CNN3Conv),
+]
 
-        with open(metrics_path, "a", newline="") as f:
-            csv.writer(f).writerow(
-                [epoch, f"{train_loss:.6f}", f"{test_loss:.6f}",
-                    f"{test_acc:.6f}", f"{epoch_secs:.2f}"],
-            )
-
-        # Save the "best so far" model. The best model is rarely the last one
-        # because of overfitting, so we keep the one with highest test accuracy.
-        if test_acc > best_acc:
-            best_acc = test_acc
-            torch.save(
-                {
-                    "epoch": epoch,
-                    "model_state": model.state_dict(),
-                    "optimizer_state": optimizer.state_dict(),
-                    "config": asdict(cfg),
-                    "test_acc": test_acc,
-                },
-                os.path.join(run_dir, "best.pt"),
-            )
-
-        # Save periodic checkpoints too so we can inspect training history.
-        if epoch % cfg.save_every == 0:
-            torch.save(
-                model.state_dict(),
-                os.path.join(run_dir, f"epoch_{epoch:02d}.pt"),
-            )
-
-    total_secs = time.time() - run_start
-    print(f"=== Run finished in {total_secs:.1f}s  best_test_acc={best_acc:.4f} ===")
-
-    # Final small summary file for quick scanning.
-    with open(os.path.join(run_dir, "summary.txt"), "w") as f:
-        f.write(f"run={run_name}\n")
-        f.write(f"best_test_acc={best_acc:.4f}\n")
-        f.write(f"total_seconds={total_secs:.1f}\n")
-
-    return {"run": run_name, "best_acc": best_acc, "seconds": total_secs}
-
-
-# ----------------------------------------------------------------------------
-# 5. Tiny hyperparameter search
-# ----------------------------------------------------------------------------
-def main():
-    # A hand-written list of experiments. Each one changes ONE or TWO things so
-    # the effect of that change is easier to interpret than if everything
-    # changed at once. This is the simplest possible hyperparameter tuning.
-    experiments = [
-        Config(name="baseline"),
-        Config(name="bigger_cnn", conv_channels=(32, 64), fc_hidden=256),
-        Config(name="more_dropout", dropout=0.4),
-        Config(name="less_aug", rotation_deg=0.0, translate=0.0, noise_std=0.0),
-    ]
-
-    results = []
-    for cfg in experiments:
-        results.append(train_one_run(cfg))
-
-    # Print a leaderboard at the end so it's obvious which setup won.
-    print("\n====== Leaderboard ======")
-    for r in sorted(results, key=lambda x: x["best_acc"], reverse=True):
-        print(f"  {r['best_acc']:.4f}   {r['seconds']:6.1f}s   {r['run']}")
-
+hyperparameter_configs = [
+    {"run_name": "hp_run_1", "learning_rate": 1e-3, "dropout": 0.25, "weight_decay": 0.0},
+    {"run_name": "hp_run_2", "learning_rate": 5e-4, "dropout": 0.25, "weight_decay": 0.0},
+    {"run_name": "hp_run_3", "learning_rate": 1e-3, "dropout": 0.40, "weight_decay": 1e-4},
+]
 
 if __name__ == "__main__":
-    main()
+    comparison_results = []
+
+    for model_name, model_class in architectures:
+        print(f"\n===== Training {model_name} =====")
+    
+        model = model_class(dropout=config["dropout"]).to(DEVICE)
+        print(model)
+
+        criterion = nn.CrossEntropyLoss()
+        optimizer = torch.optim.Adam(
+            model.parameters(),
+            lr=config["learning_rate"],
+            weight_decay=config["weight_decay"],
+        )
+
+        history = {"train_loss": [], "train_acc": [], "test_loss": [], "test_acc": []}
+        best_test_acc = 0.0
+        training_start = time.time()
+
+        model_checkpoint_dir = checkpoint_dir / model_name
+        model_checkpoint_dir.mkdir(parents=True, exist_ok=True)
+
+        for epoch in range(1, config["epochs"] + 1):
+            epoch_start = time.time()
+
+            train_loss, train_acc = run_epoch(model, train_loader, criterion, optimizer)
+            test_loss, test_acc = run_epoch(model, test_loader, criterion)
+
+            history["train_loss"].append(train_loss)
+            history["train_acc"].append(train_acc)
+            history["test_loss"].append(test_loss)
+            history["test_acc"].append(test_acc)
+
+            epoch_time = time.time() - epoch_start
+            print(
+                f"{model_name} | Epoch {epoch:02d}/{config['epochs']} | "
+                f"train_loss={train_loss:.4f} train_acc={train_acc:.4f} | "
+                f"test_loss={test_loss:.4f} test_acc={test_acc:.4f} | "
+                f"time={epoch_time:.1f}s"
+                )
+
+            if test_acc > best_test_acc:
+                best_test_acc = test_acc
+                torch.save(model.state_dict(), model_checkpoint_dir / "best.pt")
+
+            if epoch % 5 == 0:
+                torch.save(model.state_dict(), model_checkpoint_dir / f"epoch_{epoch:02d}.pt")
+
+        total_time = time.time() - training_start
+
+        best_checkpoint_path = model_checkpoint_dir / "best.pt"
+        model.load_state_dict(torch.load(best_checkpoint_path, map_location=DEVICE))
+        final_test_loss, final_test_acc = run_epoch(model, test_loader, criterion)
+
+        print(f"\n=== Final results for {model_name} ===")
+        print(f"Best checkpoint: {best_checkpoint_path}")
+        print(f"Final test loss: {final_test_loss:.4f}")
+        print(f"Final test accuracy: {final_test_acc:.4f}")
+
+        model_summary = {
+            "model_name": model_name,
+            "final_test_loss": final_test_loss,
+            "final_test_accuracy": final_test_acc,
+            "best_test_accuracy": best_test_acc,
+            "total_training_time_sec": total_time,
+            "epochs_completed": config["epochs"],
+        }
+        comparison_results.append(model_summary)
+
+        with open(run_dir / f"history_{model_name}.json", "w") as f:
+            json.dump(history, f, indent=2)
+
+        with open(run_dir / f"summary_{model_name}.json", "w") as f:
+            json.dump(model_summary, f, indent=2)
+
+    with open(run_dir / "architecture_comparison.json", "w") as f:
+        json.dump(comparison_results, f, indent=2)
+
+    print("\n=== Architecture comparison ===")
+    for result in comparison_results:
+        print(
+            f"{result['model_name']}: "
+            f"final_test_accuracy={result['final_test_accuracy']:.4f}, "
+            f"training_time={result['total_training_time_sec']:.1f}s"
+        )
+
+    hyperparameter_results = []
+    tuning_model_name = "cnn_2conv"
+
+    print("\n=== Hyperparameter tuning ===")
+    for hp_config in hyperparameter_configs:
+        print(f"\n===== Training {tuning_model_name} with {hp_config} =====")
+
+        model = CNN2Conv(dropout=hp_config["dropout"]).to(DEVICE)
+        criterion = nn.CrossEntropyLoss()
+        optimizer = torch.optim.Adam(
+            model.parameters(),
+            lr=hp_config["learning_rate"],
+            weight_decay=hp_config["weight_decay"],
+        )
+
+        best_test_acc = 0.0
+        training_start = time.time()
+
+        hp_checkpoint_dir = checkpoint_dir / "hyperparameter_tuning" / hp_config["run_name"]
+        hp_checkpoint_dir.mkdir(parents=True, exist_ok=True)
+
+        for epoch in range(1, config["epochs"] + 1):
+            train_loss, train_acc = run_epoch(model, train_loader, criterion, optimizer)
+            test_loss, test_acc = run_epoch(model, test_loader, criterion)
+
+            print(
+                f"{hp_config['run_name']} | Epoch {epoch:02d}/{config['epochs']} | "
+                f"train_acc={train_acc:.4f} | test_acc={test_acc:.4f}"
+            )
+
+            if test_acc > best_test_acc:
+                best_test_acc = test_acc
+                torch.save(model.state_dict(), hp_checkpoint_dir / "best.pt")
+
+        total_time = time.time() - training_start
+
+        best_checkpoint_path = hp_checkpoint_dir / "best.pt"
+        model.load_state_dict(torch.load(best_checkpoint_path, map_location=DEVICE))
+        final_test_loss, final_test_acc = run_epoch(model, test_loader, criterion)
+
+        hp_summary = {
+            "model_name": tuning_model_name,
+            "run_name": hp_config["run_name"],
+            "learning_rate": hp_config["learning_rate"],
+            "dropout": hp_config["dropout"],
+            "weight_decay": hp_config["weight_decay"],
+            "final_test_loss": final_test_loss,
+            "final_test_accuracy": final_test_acc,
+            "best_test_accuracy": best_test_acc,
+            "total_training_time_sec": total_time,
+        }
+        hyperparameter_results.append(hp_summary)
+
+    with open(run_dir / "hyperparameter_comparison.json", "w") as f:
+        json.dump(hyperparameter_results, f, indent=2)
+    print(f"Hyperparameter comparison saved to {run_dir / 'hyperparameter_comparison.json'}")
