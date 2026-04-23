@@ -1,6 +1,7 @@
 import json
 import random
 import time
+import shutil
 from datetime import datetime
 from pathlib import Path
 from torch.utils.data import DataLoader
@@ -24,7 +25,7 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # Hyperparameters
 config = {
-    "run_name": "cnn_baseline",
+    "run_name": "cnn_assignment_part2",
     "dataset": "MNIST",
     "batch_size": 64,
     "epochs": 10,
@@ -41,6 +42,12 @@ run_dir = Path("runs") / f"{timestamp}_{config['run_name']}"
 checkpoint_dir = run_dir / "checkpoints"
 run_dir.mkdir(parents=True, exist_ok=True)
 checkpoint_dir.mkdir(parents=True, exist_ok=True)
+
+# Save a snapshot of the exact training script used for this run
+try:
+    shutil.copy2(Path(__file__).resolve(), run_dir / "source_snapshot.py")
+except Exception:
+    pass
 
 # Save config next to the checkpoints
 with open(run_dir / "config.json", "w") as f:
@@ -72,7 +79,7 @@ test_loader = DataLoader(test_dataset, batch_size=config["batch_size"], shuffle=
 print(f"Training samples: {len(train_dataset)}")
 print(f"Test samples: {len(test_dataset)}")
 
-class CNN(nn.Module):
+class CNN2Conv(nn.Module):
     def __init__(self, dropout=0.25):
         super().__init__()
         # Convolutional block 1
@@ -103,23 +110,33 @@ class CNN(nn.Module):
         x = self.fc2(x) # -> (batch, 10) raw logits
         return x
 
-model = CNN(dropout=config["dropout"]).to(DEVICE)
-print(model)
+class CNN3Conv(nn.Module):
+    def __init__(self, dropout=0.25):
+        super().__init__()
+        self.conv1 = nn.Conv2d(in_channels=1, out_channels=32, kernel_size=3, padding=1)
+        self.bn1 = nn.BatchNorm2d(32)
+        self.conv2 = nn.Conv2d(in_channels=32, out_channels=64, kernel_size=3, padding=1)
+        self.bn2 = nn.BatchNorm2d(64)
+        self.conv3 = nn.Conv2d(in_channels=64, out_channels=64, kernel_size=3, padding=1)
+        self.bn3 = nn.BatchNorm2d(64)
+        self.pool = nn.MaxPool2d(kernel_size=2, stride=2)
+        self.fc1 = nn.Linear(64 * 3 * 3, 128)
+        self.fc2 = nn.Linear(128, 10)
+        self.dropout = nn.Dropout(dropout)
 
+    def forward(self, x):
+        x = self.pool(F.relu(self.bn1(self.conv1(x))))   # 28x28 -> 14x14
+        x = self.pool(F.relu(self.bn2(self.conv2(x))))   # 14x14 -> 7x7
+        x = self.pool(F.relu(self.bn3(self.conv3(x))))   # 7x7 -> 3x3
+        x = torch.flatten(x, start_dim=1)
+        x = F.relu(self.fc1(x))
+        x = self.dropout(x)
+        x = self.fc2(x)
+        return x
 
-# Loss function and optimizer
-criterion = nn.CrossEntropyLoss()
-optimizer = torch.optim.Adam(
-    model.parameters(),
-    lr=config["learning_rate"],
-    weight_decay=config["weight_decay"],
-)
-
-# Track metrics across epochs
-history = {"train_loss": [], "train_acc": [], "test_loss": [], "test_acc": []}
-best_test_acc = 0.0
-
-def run_epoch(loader, train_mode):
+def run_epoch(model, loader, criterion, optimizer=None):
+    train_mode = optimizer is not None
+    
     if train_mode:
         model.train()
     else:
@@ -151,71 +168,157 @@ def run_epoch(loader, train_mode):
     accuracy = correct / total
     return avg_loss, accuracy
 
+architectures = [
+    ("cnn_2conv", CNN2Conv),
+    ("cnn_3conv", CNN3Conv),
+]
+
+hyperparameter_configs = [
+    {"run_name": "hp_run_1", "learning_rate": 1e-3, "dropout": 0.25, "weight_decay": 0.0},
+    {"run_name": "hp_run_2", "learning_rate": 5e-4, "dropout": 0.25, "weight_decay": 0.0},
+    {"run_name": "hp_run_3", "learning_rate": 1e-3, "dropout": 0.40, "weight_decay": 1e-4},
+]
+
 if __name__ == "__main__":
+    comparison_results = []
 
-    training_start = time.time()
+    for model_name, model_class in architectures:
+        print(f"\n===== Training {model_name} =====")
+    
+        model = model_class(dropout=config["dropout"]).to(DEVICE)
+        print(model)
 
-    for epoch in range(1, config["epochs"] + 1):
-        epoch_start = time.time()
-
-        train_loss, train_acc = run_epoch(train_loader, train_mode=True)
-        test_loss, test_acc = run_epoch(test_loader, train_mode=False)
-
-        history["train_loss"].append(train_loss)
-        history["train_acc"].append(train_acc)
-        history["test_loss"].append(test_loss)
-        history["test_acc"].append(test_acc)
-
-        epoch_time = time.time() - epoch_start
-        print(
-            f"Epoch {epoch:02d}/{config['epochs']} | "
-            f"train_loss={train_loss:.4f} train_acc={train_acc:.4f} | "
-            f"test_loss={test_loss:.4f} test_acc={test_acc:.4f} | "
-            f"time={epoch_time:.1f}s"
+        criterion = nn.CrossEntropyLoss()
+        optimizer = torch.optim.Adam(
+            model.parameters(),
+            lr=config["learning_rate"],
+            weight_decay=config["weight_decay"],
         )
 
-        # Save the "best so far" model. The best model is rarely the last one
-        if test_acc > best_test_acc:
-            best_test_acc = test_acc
-            torch.save(model.state_dict(), checkpoint_dir / "best.pt")
+        history = {"train_loss": [], "train_acc": [], "test_loss": [], "test_acc": []}
+        best_test_acc = 0.0
+        training_start = time.time()
 
-        # Save periodic checkpoints every 5 epochs so we can inspect training history.
-        if epoch % 5 == 0:
-            torch.save(model.state_dict(), checkpoint_dir / f"epoch_{epoch:02d}.pt")
+        model_checkpoint_dir = checkpoint_dir / model_name
+        model_checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
-    total_time = time.time() - training_start
-    print(f"\nTotal training time: {total_time:.1f}s")
-    print(f"Best test accuracy: {best_test_acc:.4f}")
+        for epoch in range(1, config["epochs"] + 1):
+            epoch_start = time.time()
 
-    with open(run_dir /"history.json", "w") as f:
-        json.dump(history, f, indent=2)	
+            train_loss, train_acc = run_epoch(model, train_loader, criterion, optimizer)
+            test_loss, test_acc = run_epoch(model, test_loader, criterion)
 
-    # Load the best model, not the last epoch's checkpoint
-    best_checkpoint_path = checkpoint_dir / "best.pt"
-    model.load_state_dict(torch.load(best_checkpoint_path, map_location=DEVICE))
+            history["train_loss"].append(train_loss)
+            history["train_acc"].append(train_acc)
+            history["test_loss"].append(test_loss)
+            history["test_acc"].append(test_acc)
 
-    # Evaluate the test one more time to get the final test loss and accuracy
-    final_test_loss, final_test_acc = run_epoch(test_loader, train_mode=False)
+            epoch_time = time.time() - epoch_start
+            print(
+                f"{model_name} | Epoch {epoch:02d}/{config['epochs']} | "
+                f"train_loss={train_loss:.4f} train_acc={train_acc:.4f} | "
+                f"test_loss={test_loss:.4f} test_acc={test_acc:.4f} | "
+                f"time={epoch_time:.1f}s"
+                )
 
-    print(f"\n=== Final results === ")
-    print(f"Best checkpoint: {best_checkpoint_path}")
-    print(f"Final test loss: {final_test_loss:.4f}")
-    print(f"Final test accuracy: {final_test_acc:.4f}")
+            if test_acc > best_test_acc:
+                best_test_acc = test_acc
+                torch.save(model.state_dict(), model_checkpoint_dir / "best.pt")
 
-    # Save a summary of this run
-    summary = {
-        "run_name": config["run_name"],
-        "run_dir": str(run_dir),
-        "config": config,
-        "final_test_loss": final_test_loss,
-        "final_test_accuracy": final_test_acc,
-        "best_test_accuracy": best_test_acc,
-        "total_training_time_sec": total_time,
-        "epochs_completed": config["epochs"],
-    }
+            if epoch % 5 == 0:
+                torch.save(model.state_dict(), model_checkpoint_dir / f"epoch_{epoch:02d}.pt")
 
-    with open(run_dir / "summary.json", "w") as f:
-        json.dump(summary, f, indent=2)
+        total_time = time.time() - training_start
 
-    print(f"Summary saved to {run_dir / 'summary.json'}")
+        best_checkpoint_path = model_checkpoint_dir / "best.pt"
+        model.load_state_dict(torch.load(best_checkpoint_path, map_location=DEVICE))
+        final_test_loss, final_test_acc = run_epoch(model, test_loader, criterion)
 
+        print(f"\n=== Final results for {model_name} ===")
+        print(f"Best checkpoint: {best_checkpoint_path}")
+        print(f"Final test loss: {final_test_loss:.4f}")
+        print(f"Final test accuracy: {final_test_acc:.4f}")
+
+        model_summary = {
+            "model_name": model_name,
+            "final_test_loss": final_test_loss,
+            "final_test_accuracy": final_test_acc,
+            "best_test_accuracy": best_test_acc,
+            "total_training_time_sec": total_time,
+            "epochs_completed": config["epochs"],
+        }
+        comparison_results.append(model_summary)
+
+        with open(run_dir / f"history_{model_name}.json", "w") as f:
+            json.dump(history, f, indent=2)
+
+        with open(run_dir / f"summary_{model_name}.json", "w") as f:
+            json.dump(model_summary, f, indent=2)
+
+    with open(run_dir / "architecture_comparison.json", "w") as f:
+        json.dump(comparison_results, f, indent=2)
+
+    print("\n=== Architecture comparison ===")
+    for result in comparison_results:
+        print(
+            f"{result['model_name']}: "
+            f"final_test_accuracy={result['final_test_accuracy']:.4f}, "
+            f"training_time={result['total_training_time_sec']:.1f}s"
+        )
+
+    hyperparameter_results = []
+    tuning_model_name = "cnn_2conv"
+
+    print("\n=== Hyperparameter tuning ===")
+    for hp_config in hyperparameter_configs:
+        print(f"\n===== Training {tuning_model_name} with {hp_config} =====")
+
+        model = CNN2Conv(dropout=hp_config["dropout"]).to(DEVICE)
+        criterion = nn.CrossEntropyLoss()
+        optimizer = torch.optim.Adam(
+            model.parameters(),
+            lr=hp_config["learning_rate"],
+            weight_decay=hp_config["weight_decay"],
+        )
+
+        best_test_acc = 0.0
+        training_start = time.time()
+
+        hp_checkpoint_dir = checkpoint_dir / "hyperparameter_tuning" / hp_config["run_name"]
+        hp_checkpoint_dir.mkdir(parents=True, exist_ok=True)
+
+        for epoch in range(1, config["epochs"] + 1):
+            train_loss, train_acc = run_epoch(model, train_loader, criterion, optimizer)
+            test_loss, test_acc = run_epoch(model, test_loader, criterion)
+
+            print(
+                f"{hp_config['run_name']} | Epoch {epoch:02d}/{config['epochs']} | "
+                f"train_acc={train_acc:.4f} | test_acc={test_acc:.4f}"
+            )
+
+            if test_acc > best_test_acc:
+                best_test_acc = test_acc
+                torch.save(model.state_dict(), hp_checkpoint_dir / "best.pt")
+
+        total_time = time.time() - training_start
+
+        best_checkpoint_path = hp_checkpoint_dir / "best.pt"
+        model.load_state_dict(torch.load(best_checkpoint_path, map_location=DEVICE))
+        final_test_loss, final_test_acc = run_epoch(model, test_loader, criterion)
+
+        hp_summary = {
+            "model_name": tuning_model_name,
+            "run_name": hp_config["run_name"],
+            "learning_rate": hp_config["learning_rate"],
+            "dropout": hp_config["dropout"],
+            "weight_decay": hp_config["weight_decay"],
+            "final_test_loss": final_test_loss,
+            "final_test_accuracy": final_test_acc,
+            "best_test_accuracy": best_test_acc,
+            "total_training_time_sec": total_time,
+        }
+        hyperparameter_results.append(hp_summary)
+
+    with open(run_dir / "hyperparameter_comparison.json", "w") as f:
+        json.dump(hyperparameter_results, f, indent=2)
+    print(f"Hyperparameter comparison saved to {run_dir / 'hyperparameter_comparison.json'}")
