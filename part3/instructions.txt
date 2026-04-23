@@ -1,0 +1,74 @@
+# Uppgift
+
+I denna del ska ni göra ungefär samma sak som i delmoment 2, **men för ett dataset som ni själva hittar och/eller skapar**.
+
+Bestäm er för ett (rimligt enkelt) problem ni vill lösa med machine learning, förslagsvis klassificering av någon annan typ av bilder på objekt som tex att skilja katter från hundar, känna igen bilmodeller, etc.
+
+Uppgiften består av två delar: **Classic learning**, och Transfer learning
+
+1. ✅ Testa att träna ett nät på samma sätt som tidigare, med alla weights & biases initierade slumpmässigt.
+2. ✅ **Testa att använda ett “pre-trained” network, exempelvis ResNet50,** och träna ett sådant “halvtränat” nätverk på den data ni har bestämt er för att använda.
+    - Detta kallas “transfer learning”, eftersom ni överför strukturer i en modell som någon annan redan har tränat till det problem som du är ute efter att lösa.
+    - Ofta kan det ge ett bättre resultat, givet samma mängd data som du har tillgänglig. Eftersom relevant och bra träningsdata ofta är förhållandevis dyrt att få fram, så är det mycket vanligt att man drar nytta av modeller som tränats på data som någon annan redan har samlat in. Det handlar alltså mer om att dra nytta av någon annans data och optimerade nätarkitektur, än beräkningskraft.
+    - 🤔 Att fundera på: Hur kommer det sig att en modell som tränats att känna igen blommor, fordon, etc snabbare blir bra på att känna igen just dina kategorier av objekt, även om nätet inte har tränats på just sådan data tidigare?
+
+---
+
+# Tips för transfer learning
+
+### ResNet50
+
+*Residual* = “skip connections” = genvägar för att undvika “vanishing gradients”, och därmed tillåta djupare modeller.
+
+✅ Bakgrund:
+
+- 📖 PyTorch docs för transfer learning: https://pytorch.org/tutorials/beginner/transfer_learning_tutorial.html
+- 📖 Generell definition: [Wikipedia-deep-residual-networks](https://en.wikipedia.org/wiki/Residual_neural_network)
+- 🚀 Historisk bakgrund och konstruktion: [ResNet-residual-neural-network](https://viso.ai/deep-learning/resnet-residual-neural-network/)
+- 📖 Värt att notera i ResNet’s konstruktion:
+    - ResNet är mycket djupare än modellerna vi gjort hittills (residual connections).
+    - ResNet har en upprepad struktur som har mycket smala convolutional layers.
+    - 🤔 Att fundera på: Observera särskilt den smarta användningen av convolution kernels av storlek 1x1 pixels. Dessa används för att ändra dimensionaliteten på data till nästa lager. Det kanske låter märkligt, men minns att *varje kernel* i ett conv2d-layer tar input från *samtliga kernels’ output* från förra lagrets conv2d-layer. Hur många inputs får en 1x1-kernel efter ett conv2d-layer med t.ex. 32 kernels?
+- 🛟 Det kan vara lite knepigt att hålla rätt på tensorernas dimensionalitet när man börjar stapla convolutional layers på varandra. Här är ett exempel som förhoppningsvis reder ut begreppen:
+    
+    [Tensor dimensions, dual conv2d](https://www.notion.so/Tensor-dimensions-dual-conv2d-2b9a7700ac2681969315dcfce0e0e667?pvs=21)
+    
+
+🛟 Exempel på hur man kan starta med en pre-trained model:
+
+```python
+# Start with a pre-trained image classifier model, e.g. ResNet50
+# (You cannot freely decide the layer structure, since it is already set)
+from torchvision.models import resnet50, ResNet50_Weights
+
+# Load the pre-trained ResNet50 model with specified weights
+model = resnet50(weights=ResNet50_Weights.IMAGENET1K_V1)
+```
+
+### LabelEncoder
+
+🛟 Om ni använder ett dataset där bildernas respektive korrekta klass beskrivs av strängar istället för integers, så finns en lite praktisk helper class “LabelEncoder” som mappar strängarna till integers:
+
+```python
+label_list = ["Boeing", "Airbus" (etc!)]  # Get from dataset or list manually
+label_encoder = LabelEncoder()            # Convert labels from string to int
+label_encoder.fit(label_list)
+```
+
+### Data augmentation
+
+🛟 Exempel på transform för träningsdatasettet (via DataLoader:n för träningsdata). Observera att man inte vill ha random, jitter och sådant för test-data, endast för träningsdata:
+
+```python
+# TRAINING DATA TRANSFORM
+train_transform = transforms.Compose([
+    transforms.RandomAffine(degrees=degrees, translate=translate, scale=scale),
+    transforms.RandomHorizontalFlip(),
+    transforms.ColorJitter(saturation=saturation),  # Saturation to given range
+    transforms.Resize((224, 224)),
+    transforms.ToTensor(),
+    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+])
+```
+
+🏅
