@@ -5,6 +5,7 @@ import shutil
 from datetime import datetime
 from pathlib import Path
 from torch.utils.data import DataLoader
+from torch.utils.tensorboard import SummaryWriter
 from torchvision import datasets, transforms
 
 import numpy as np
@@ -40,8 +41,10 @@ config = {
 timestamp=datetime.now().strftime("%Y%m%d_%H%M%S")
 run_dir = Path("runs") / f"{timestamp}_{config['run_name']}"
 checkpoint_dir = run_dir / "checkpoints"
+tensorboard_dir = run_dir / "tensorboard"
 run_dir.mkdir(parents=True, exist_ok=True)
 checkpoint_dir.mkdir(parents=True, exist_ok=True)
+tensorboard_dir.mkdir(parents=True, exist_ok=True)
 
 # Save a snapshot of the exact training script used for this run
 try:
@@ -56,6 +59,7 @@ with open(run_dir / "config.json", "w") as f:
 print(f"Device: {DEVICE}")
 print(f"Run folder: {run_dir}")
 
+# Data augmentation
 # Transforms the training set to add random rotation, translation, and scaling
 train_transform = transforms.Compose([
     transforms.RandomRotation(degrees=10),
@@ -186,6 +190,7 @@ if __name__ == "__main__":
         print(f"\n===== Training {model_name} =====")
     
         model = model_class(dropout=config["dropout"]).to(DEVICE)
+        writer = SummaryWriter(log_dir=str(tensorboard_dir / model_name))
         print(model)
 
         criterion = nn.CrossEntropyLoss()
@@ -207,6 +212,10 @@ if __name__ == "__main__":
 
             train_loss, train_acc = run_epoch(model, train_loader, criterion, optimizer)
             test_loss, test_acc = run_epoch(model, test_loader, criterion)
+            writer.add_scalar("loss/train", train_loss, epoch)
+            writer.add_scalar("loss/test", test_loss, epoch)
+            writer.add_scalar("accuracy/train", train_acc, epoch)
+            writer.add_scalar("accuracy/test", test_acc, epoch)
 
             history["train_loss"].append(train_loss)
             history["train_acc"].append(train_acc)
@@ -227,6 +236,8 @@ if __name__ == "__main__":
 
             if epoch % 5 == 0:
                 torch.save(model.state_dict(), model_checkpoint_dir / f"epoch_{epoch:02d}.pt")
+        writer.flush()
+        writer.close()
 
         total_time = time.time() - training_start
 
@@ -274,6 +285,7 @@ if __name__ == "__main__":
         print(f"\n===== Training {tuning_model_name} with {hp_config} =====")
 
         model = CNN2Conv(dropout=hp_config["dropout"]).to(DEVICE)
+        writer = SummaryWriter(log_dir=str(tensorboard_dir / "hyperparameter_tuning" / hp_config["run_name"]))
         criterion = nn.CrossEntropyLoss()
         optimizer = torch.optim.Adam(
             model.parameters(),
@@ -290,6 +302,10 @@ if __name__ == "__main__":
         for epoch in range(1, config["epochs"] + 1):
             train_loss, train_acc = run_epoch(model, train_loader, criterion, optimizer)
             test_loss, test_acc = run_epoch(model, test_loader, criterion)
+            writer.add_scalar("loss/train", train_loss, epoch)
+            writer.add_scalar("loss/test", test_loss, epoch)
+            writer.add_scalar("accuracy/train", train_acc, epoch)
+            writer.add_scalar("accuracy/test", test_acc, epoch)
 
             print(
                 f"{hp_config['run_name']} | Epoch {epoch:02d}/{config['epochs']} | "
@@ -299,6 +315,8 @@ if __name__ == "__main__":
             if test_acc > best_test_acc:
                 best_test_acc = test_acc
                 torch.save(model.state_dict(), hp_checkpoint_dir / "best.pt")
+        writer.flush()
+        writer.close()
 
         total_time = time.time() - training_start
 
@@ -322,3 +340,5 @@ if __name__ == "__main__":
     with open(run_dir / "hyperparameter_comparison.json", "w") as f:
         json.dump(hyperparameter_results, f, indent=2)
     print(f"Hyperparameter comparison saved to {run_dir / 'hyperparameter_comparison.json'}")
+    print(f"TensorBoard logs saved to {tensorboard_dir}")
+    print(f"Start TensorBoard with: tensorboard --logdir \"{tensorboard_dir}\"")
