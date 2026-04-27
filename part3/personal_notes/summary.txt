@@ -14,5 +14,3 @@ Det extra Convolutional layer hjälper en del och dubblerar nästan värdena ifr
 Med ett gap på ca 7 procentenheter finns det indikationer på en mild overfitting eller near-saturation efter 10 epochs.
 
 Hyperparameters gav inte imponerat resultat exempelvis test accuracy på 17-21%, som inte ens går över CNN3Conv.
-
-Vä
