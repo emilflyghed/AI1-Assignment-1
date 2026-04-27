@@ -1,0 +1,7 @@
+# assignment_1: PyTorch + MNIST / transfer learning
+# Python 3.12+ (venv also tested with 3.13)
+numpy==2.4.4
+Pillow==12.2.0
+tensorboard==2.20.0
+torch==2.11.0
+torchvision==0.26.0
