@@ -1,0 +1,5 @@
+CNN3 lärde sig träningsdatan bäst och nådde lägst loss som bevisar att arkitekturen har bäst kapacitet.
+CNN2 nådde dock nästan identiskt resultat i test datan vilket kan säga att en simplare modell är bättre anpassad för MNIST datan.
+Hyperparameter tuningen ökade inte tydligt värdena.
+
+Överlag så är CNN3 den starkare modellen när det kommer till loss och lärande medans CNN2 är ett lättviktigt alternativ.

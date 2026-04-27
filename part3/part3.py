@@ -4,9 +4,10 @@ import time
 import shutil
 from datetime import datetime
 from pathlib import Path
-from torch.utils.data import DataLoader, ConcatDataset  # added ConcatDataset to merge train+val
+from torch.utils.data import DataLoader, ConcatDataset
 from torchvision import datasets, transforms
-from torchvision.models import resnet50, ResNet50_Weights  # pre-trained model for transfer learning
+from torchvision.models import resnet50, ResNet50_Weights
+from torch.utils.tensorboard import SummaryWriter
 
 import numpy as np
 import torch
@@ -24,9 +25,7 @@ if torch.cuda.is_available():
 # Use GPU if available, otherwise use CPU
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-# CHANGED: dataset switched from MNIST to Oxford Flowers102.
-# Added num_classes and image_size so the magic numbers aren't scattered through the script.
-# Lowered batch_size because 224x224 RGB uses much more memory than 28x28 grayscale.
+# Hyperparameters
 config = {
     "run_name": "cnn_assignment_part3",
     "dataset": "Flowers102",
@@ -35,7 +34,7 @@ config = {
     "batch_size": 32,
     "epochs": 10,
     "learning_rate": 1e-3,
-    "transfer_learning_rate": 1e-4,  # ADDED: lower LR is standard for fine-tuning pre-trained weights
+    "transfer_learning_rate": 1e-4,  # Lower Learning rate is standard for pre-trained weights
     "optimizer": "adam",
     "dropout": 0.25,
     "weight_decay": 0.0,
@@ -46,8 +45,10 @@ config = {
 timestamp=datetime.now().strftime("%Y%m%d_%H%M%S")
 run_dir = Path("runs") / f"{timestamp}_{config['run_name']}"
 checkpoint_dir = run_dir / "checkpoints"
+tensorboard_dir = run_dir / "tensorboard"
 run_dir.mkdir(parents=True, exist_ok=True)
 checkpoint_dir.mkdir(parents=True, exist_ok=True)
+tensorboard_dir.mkdir(parents=True, exist_ok=True)
 
 # Save a snapshot of the exact training script used for this run
 try:
@@ -62,11 +63,11 @@ with open(run_dir / "config.json", "w") as f:
 print(f"Device: {DEVICE}")
 print(f"Run folder: {run_dir}")
 
-# CHANGED: transforms rewritten for 224x224 RGB input.
-# - Resize((224, 224)) is required because Flowers102 images come in varying sizes and ResNet50 expects 224.
-# - RandomHorizontalFlip + ColorJitter added (flowers look fine mirrored, and color variation helps generalization).
-# - Normalize uses ImageNet statistics because that's what ResNet50 was pre-trained with.
-#   Using the same normalization for the custom CNNs keeps the comparison fair.
+# Data augmentation
+# Resize((224, 224)) is required because Flowers102 images come in varying sizes and ResNet50 expects 224.
+# RandomHorizontalFlip + ColorJitter added (flowers look fine mirrored, and color variation helps generalization).
+# Normalize uses ImageNet statistics because that's what ResNet50 was pre-trained with.
+# Using the same normalization for the custom CNNs keeps the comparison fair.
 train_transform = transforms.Compose([
     transforms.Resize((config["image_size"], config["image_size"])),
     transforms.RandomHorizontalFlip(),
@@ -76,17 +77,14 @@ train_transform = transforms.Compose([
     transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
 ])
 
-# CHANGED: test transform - no augmentation, only deterministic resize + normalize.
+# Transforms the test set to normalize the data
 test_transform = transforms.Compose([
     transforms.Resize((config["image_size"], config["image_size"])),
     transforms.ToTensor(),
     transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
 ])
 
-# CHANGED: dataset loading replaced with Flowers102.
-# Quirk of Flowers102: the "train" split is only 1020 images, "val" is 1020, "test" is 6149.
-# We merge train+val with ConcatDataset to get 2040 training images and use test for evaluation.
-# This is a very common pattern for this dataset.
+# Dataset loading replaced with Flowers102.
 flowers_train = datasets.Flowers102(root="data", split="train", download=True, transform=train_transform)
 flowers_val = datasets.Flowers102(root="data", split="val", download=True, transform=train_transform)
 train_dataset = ConcatDataset([flowers_train, flowers_val])
@@ -99,10 +97,9 @@ print(f"Training samples: {len(train_dataset)}")
 print(f"Test samples: {len(test_dataset)}")
 
 class CNN2Conv(nn.Module):
-    # CHANGED: now accepts num_classes so the head is not hardcoded to 10.
     def __init__(self, dropout=0.25, num_classes=102):
         super().__init__()
-        # CHANGED: in_channels=3 for RGB (was 1 for MNIST grayscale).
+        # in_channels=3 for RGB
         self.conv1 = nn.Conv2d(in_channels=3, out_channels=32, kernel_size=3, padding=1)
         self.bn1 = nn.BatchNorm2d(32)
 
@@ -111,33 +108,29 @@ class CNN2Conv(nn.Module):
 
         self.pool = nn.MaxPool2d(kernel_size=2, stride=2)
 
-        # ADDED: adaptive pooling makes the flattened feature size independent of input resolution.
-        # Without this, going from 28x28 to 224x224 would blow up fc1 to ~25M parameters.
-        # With adaptive pooling to 7x7, fc1 stays at 64*7*7 = 3136 features, same as the MNIST version.
+        # adaptive pooling makes the flattened feature size independent of input resolution.
         self.adaptive_pool = nn.AdaptiveAvgPool2d((7, 7))
 
         self.fc1 = nn.Linear(64 * 7 * 7, 128)
-        # CHANGED: output dimension now uses num_classes instead of hardcoded 10.
+        # output dimension now uses num_classes instead of hardcoded 10.
         self.fc2 = nn.Linear(128, num_classes)
 
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, x):
-        # CHANGED: input shape is now (batch, 3, 224, 224) instead of (batch, 1, 28, 28).
-        x = self.pool(F.relu(self.bn1(self.conv1(x))))   # -> (batch, 32, 112, 112)
-        x = self.pool(F.relu(self.bn2(self.conv2(x))))   # -> (batch, 64, 56, 56)
-        x = self.adaptive_pool(x)                        # -> (batch, 64, 7, 7)  ADDED
-        x = torch.flatten(x, start_dim=1)                # -> (batch, 3136)
+        # input shape: (batch, 3, 224, 224)
+        x = self.pool(F.relu(self.bn1(self.conv1(x)))) # -> (batch, 32, 112, 112)
+        x = self.pool(F.relu(self.bn2(self.conv2(x)))) # -> (batch, 64, 56, 56)
+        x = self.adaptive_pool(x) # -> (batch, 64, 7, 7)
+        x = torch.flatten(x, start_dim=1) # -> (batch, 3136)
         x = F.relu(self.fc1(x))
         x = self.dropout(x)
-        x = self.fc2(x)                                  # -> (batch, num_classes) raw logits
+        x = self.fc2(x) # -> (batch, num_classes) raw logits
         return x
 
 class CNN3Conv(nn.Module):
-    # CHANGED: now accepts num_classes.
     def __init__(self, dropout=0.25, num_classes=102):
         super().__init__()
-        # CHANGED: in_channels=3 for RGB.
         self.conv1 = nn.Conv2d(in_channels=3, out_channels=32, kernel_size=3, padding=1)
         self.bn1 = nn.BatchNorm2d(32)
         self.conv2 = nn.Conv2d(in_channels=32, out_channels=64, kernel_size=3, padding=1)
@@ -145,38 +138,28 @@ class CNN3Conv(nn.Module):
         self.conv3 = nn.Conv2d(in_channels=64, out_channels=64, kernel_size=3, padding=1)
         self.bn3 = nn.BatchNorm2d(64)
         self.pool = nn.MaxPool2d(kernel_size=2, stride=2)
-
-        # ADDED: same adaptive pooling trick as CNN2Conv.
         self.adaptive_pool = nn.AdaptiveAvgPool2d((3, 3))
-
         self.fc1 = nn.Linear(64 * 3 * 3, 128)
-        # CHANGED: output uses num_classes.
         self.fc2 = nn.Linear(128, num_classes)
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, x):
-        # CHANGED: input is (batch, 3, 224, 224) now.
-        x = self.pool(F.relu(self.bn1(self.conv1(x))))   # 224 -> 112
-        x = self.pool(F.relu(self.bn2(self.conv2(x))))   # 112 -> 56
-        x = self.pool(F.relu(self.bn3(self.conv3(x))))   # 56 -> 28
-        x = self.adaptive_pool(x)                        # 28 -> 3   ADDED
+        x = self.pool(F.relu(self.bn1(self.conv1(x)))) # 224 -> 112
+        x = self.pool(F.relu(self.bn2(self.conv2(x)))) # 112 -> 56
+        x = self.pool(F.relu(self.bn3(self.conv3(x)))) # 56 -> 28
+        x = self.adaptive_pool(x) # 28 -> 3
         x = torch.flatten(x, start_dim=1)
         x = F.relu(self.fc1(x))
         x = self.dropout(x)
         x = self.fc2(x)
         return x
 
-# ADDED: factory function for the pre-trained ResNet50.
+# Factory function for the pre-trained ResNet50.
 # Loads ImageNet-pretrained weights, then replaces only the final classification layer
-# so the output dimension matches our 102 flower classes.
-# The rest of the network (features learned from ImageNet) is kept and fine-tuned.
 def build_resnet50_transfer(num_classes=102, **_unused):
     model = resnet50(weights=ResNet50_Weights.IMAGENET1K_V1)
-    # Replace the 1000-class ImageNet head with a new head for our task.
+    # Replace the 1000 class ImageNet head with a new head for our task.
     model.fc = nn.Linear(model.fc.in_features, num_classes)
-    # Note: all parameters remain trainable (full fine-tuning).
-    # To do pure feature extraction instead, freeze the backbone by setting
-    # requires_grad=False on all params BEFORE replacing model.fc.
     return model
 
 def run_epoch(model, loader, criterion, optimizer=None):
@@ -213,8 +196,6 @@ def run_epoch(model, loader, criterion, optimizer=None):
     accuracy = correct / total
     return avg_loss, accuracy
 
-# CHANGED: architectures list now includes ResNet50 transfer learning as a third entry.
-# Each entry is (name, builder_callable, learning_rate) so ResNet50 can use its lower LR.
 architectures = [
     ("cnn_2conv", CNN2Conv, config["learning_rate"]),
     ("cnn_3conv", CNN3Conv, config["learning_rate"]),
@@ -230,19 +211,17 @@ hyperparameter_configs = [
 if __name__ == "__main__":
     comparison_results = []
 
-    # CHANGED: loop now unpacks three values (name, builder, lr) instead of two.
-    # Builder is called with num_classes + dropout so the same code path works for
-    # both custom CNNs and the ResNet50 factory.
     for model_name, model_builder, model_lr in architectures:
         print(f"\n===== Training {model_name} =====")
 
         model = model_builder(dropout=config["dropout"], num_classes=config["num_classes"]).to(DEVICE)
+        writer = SummaryWriter(log_dir=str(tensorboard_dir / model_name))
         print(model)
 
         criterion = nn.CrossEntropyLoss()
         optimizer = torch.optim.Adam(
             model.parameters(),
-            lr=model_lr,  # CHANGED: per-model LR (ResNet50 gets 1e-4, custom CNNs get 1e-3)
+            lr=model_lr,
             weight_decay=config["weight_decay"],
         )
 
@@ -258,6 +237,10 @@ if __name__ == "__main__":
 
             train_loss, train_acc = run_epoch(model, train_loader, criterion, optimizer)
             test_loss, test_acc = run_epoch(model, test_loader, criterion)
+            writer.add_scalar("loss/train", train_loss, epoch)
+            writer.add_scalar("loss/test", test_loss, epoch)
+            writer.add_scalar("accuracy/train", train_acc, epoch)
+            writer.add_scalar("accuracy/test", test_acc, epoch)
 
             history["train_loss"].append(train_loss)
             history["train_acc"].append(train_acc)
@@ -278,6 +261,9 @@ if __name__ == "__main__":
 
             if epoch % 5 == 0:
                 torch.save(model.state_dict(), model_checkpoint_dir / f"epoch_{epoch:02d}.pt")
+        
+        writer.flush()
+        writer.close()
 
         total_time = time.time() - training_start
 
@@ -292,7 +278,7 @@ if __name__ == "__main__":
 
         model_summary = {
             "model_name": model_name,
-            "learning_rate": model_lr,  # ADDED: record which LR was used
+            "learning_rate": model_lr,
             "final_test_loss": final_test_loss,
             "final_test_accuracy": final_test_acc,
             "best_test_accuracy": best_test_acc,
@@ -318,7 +304,6 @@ if __name__ == "__main__":
             f"training_time={result['total_training_time_sec']:.1f}s"
         )
 
-    # Hyperparameter tuning section — unchanged in structure, only uses CNN2Conv with num_classes now.
     hyperparameter_results = []
     tuning_model_name = "cnn_2conv"
 
@@ -326,8 +311,8 @@ if __name__ == "__main__":
     for hp_config in hyperparameter_configs:
         print(f"\n===== Training {tuning_model_name} with {hp_config} =====")
 
-        # CHANGED: pass num_classes to the constructor.
         model = CNN2Conv(dropout=hp_config["dropout"], num_classes=config["num_classes"]).to(DEVICE)
+        writer = SummaryWriter(log_dir=str(tensorboard_dir / "hyperparameter_tuning" / hp_config["run_name"]))
         criterion = nn.CrossEntropyLoss()
         optimizer = torch.optim.Adam(
             model.parameters(),
@@ -344,6 +329,10 @@ if __name__ == "__main__":
         for epoch in range(1, config["epochs"] + 1):
             train_loss, train_acc = run_epoch(model, train_loader, criterion, optimizer)
             test_loss, test_acc = run_epoch(model, test_loader, criterion)
+            writer.add_scalar("loss/train", train_loss, epoch)
+            writer.add_scalar("loss/test", test_loss, epoch)
+            writer.add_scalar("accuracy/train", train_acc, epoch)
+            writer.add_scalar("accuracy/test", test_acc, epoch)
 
             print(
                 f"{hp_config['run_name']} | Epoch {epoch:02d}/{config['epochs']} | "
@@ -353,6 +342,8 @@ if __name__ == "__main__":
             if test_acc > best_test_acc:
                 best_test_acc = test_acc
                 torch.save(model.state_dict(), hp_checkpoint_dir / "best.pt")
+        writer.flush()
+        writer.close()
 
         total_time = time.time() - training_start
 
@@ -375,4 +366,7 @@ if __name__ == "__main__":
 
     with open(run_dir / "hyperparameter_comparison.json", "w") as f:
         json.dump(hyperparameter_results, f, indent=2)
+
     print(f"Hyperparameter comparison saved to {run_dir / 'hyperparameter_comparison.json'}")
+    print(f"TensorBoard logs saved to {tensorboard_dir}")
+    print(f"Start TensorBoard with: tensorboard --logdir \"{tensorboard_dir}\"") 

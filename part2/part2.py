@@ -68,7 +68,7 @@ train_transform = transforms.Compose([
     transforms.Normalize(mean=(0.1307,), std=(0.3081,)),
 ])
 
-#Transforms the test set to normalize the data
+# Transforms the test set to normalize the data
 test_transform = transforms.Compose([
     transforms.ToTensor(),
     transforms.Normalize(mean=(0.1307,), std=(0.3081,)),
@@ -172,6 +172,9 @@ def run_epoch(model, loader, criterion, optimizer=None):
     accuracy = correct / total
     return avg_loss, accuracy
 
+def count_parameters(model):
+    return sum(p.numel() for p in model.parameters() if p.requires_grad)
+
 architectures = [
     ("cnn_2conv", CNN2Conv),
     ("cnn_3conv", CNN3Conv),
@@ -192,6 +195,7 @@ if __name__ == "__main__":
         model = model_class(dropout=config["dropout"]).to(DEVICE)
         writer = SummaryWriter(log_dir=str(tensorboard_dir / model_name))
         print(model)
+        print(f"Trainable parameters: {count_parameters(model)}")
 
         criterion = nn.CrossEntropyLoss()
         optimizer = torch.optim.Adam(
@@ -341,4 +345,4 @@ if __name__ == "__main__":
         json.dump(hyperparameter_results, f, indent=2)
     print(f"Hyperparameter comparison saved to {run_dir / 'hyperparameter_comparison.json'}")
     print(f"TensorBoard logs saved to {tensorboard_dir}")
-    print(f"Start TensorBoard with: tensorboard --logdir \"{tensorboard_dir}\"")
+    print(f"Start TensorBoard with: tensorboard --logdir \"{tensorboard_dir}\"") 
