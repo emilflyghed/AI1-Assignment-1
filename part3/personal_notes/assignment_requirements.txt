@@ -1,0 +1,11 @@
+1. Genom att återanvända arkitekturerna från Part 2 där jag bara anpassat efter det nya datasetet. 
+I instansierandet av arkitekturerna så slumpas både deras weights och biases.
+
+2. I transfer learning laddar vi in det förtränade nätverket ResNet50 som har tränats redan på ImageNets 1000 classes.
+Genom att anpassa det till vårat problem där den ska tränas på Flowers102 byttae jag ut den sista layern. 
+Modellen går sedan igenom samma träningslopp som de nyskapade CNN nätverken där weights blir finjusterade på just Flowers102.
+För den reflekterande frågan om varför en modell som inte tränats på ens egna specifika data tidigare kan känna igen katergorier snabbare;
+De tidiga covolutional layers i ett förtränat nätverk har redan lärt sig känna igen generiska visuella attributes, såsom kanter, hörn, texturer eller simpla former.
+Dessa attributes är värdefulla för alla typer av bild klassificerings uppgifter, inte bara för den data som var tilltänkt originalt.
+Så genom att använda ResNe50 på Flowers102 så börjar jag inte från botten utan startar från ett nätverk som redan vet "Hur man kan se" och behöver bara tränas på att kombinera 
+attributesen med den specifika kategorin där den tillämpas. Vilket kräver mycket mindre data och mindre träningssteg än om man hade verkligen börjat på 0.
